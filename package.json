@@ -1,0 +1,29 @@
+{
+  "name": "@dwebid/core",
+  "version": "1.0.0",
+  "description": "The core module related to the dWebID stack, used for creating dWeb identities and managing dWeb-based identity documents.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dwebprotocol/dwebid.git"
+  },
+  "keywords": [
+    "dweb"
+  ],
+  "author": "Jared Rice Sr. <jared@peepsx.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/dwebprotocol/dwebid/issues"
+  },
+  "homepage": "https://dwebx.org",
+  "dependencies": {
+    "@dswarm/dwebsign": "^1.0.0",
+    "@uswarm/core": "^0.0.1",
+    "assert": "^2.0.0",
+    "events": "^3.3.0",
+    "sodium-native": "^3.2.1"
+  }
+}
