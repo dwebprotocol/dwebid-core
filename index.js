@@ -2,7 +2,7 @@ import path from 'path'
 import crypto from 'crypto'
 import assert from 'assert'
 import { EventEmitter } from 'events'
-import dwebsign from '@dswarm/dwebsign'
+import idsign from '@dwebid/sign'
 import { USwarm } from '@uswarm/core'
 import MultiDTree from 'multi-dwebtree'
 
@@ -35,7 +35,7 @@ class DWebIdentity extends EventEmitter {
   }
   register () {
     const { dht, identityDb, user } = this
-    const { keypair } = dwebsign()
+    const { keypair } = idsign()
     const { publicKey, secretKey } = keypair()
     const keypair = {
       publicKey,
@@ -170,14 +170,14 @@ class DWebIdentity extends EventEmitter {
   }
   updateRegistration (opts) {
     const { dht, identityDb, user } = this
-    if (!opts.seq) throw new Error('opts must include a seq')
-    if (!opts.keypair.secretKey) throw new Error('opts must include a privateKey')
-    if (!opts.keypair.publicKey) throw new Error('opts must include a secretKey')
-
-    const { seq, keypair } = opts
-    const { sign } = dwebsign()
+    if (!opts.seq) throw new Error('Opts must include a seq')
+    if (!opts.keypair.privateKey) throw new Error('Opts must include a private key')
+    if (!opts.keypair.publicKey) throw new Error('Opts must include a public key')
+    if (!opts.dk) throw new Error('Opts must include the identity document key')
+    const { dk, seq, keypair } = opts
+    const { sign } = idsign()
     const { publicKey, secretKey } = keypair
-    const signature = sign(user, { keypair, seq })
+    const signature = sign(user, opts)
     const uB = Buffer.from(user)
     dht.on('listening', () => {
       dht.muser.put(uB, {
@@ -188,9 +188,9 @@ class DWebIdentity extends EventEmitter {
         signature,
         seq
       }, (err, { key, ...info }) => {
-        if (err) return console.log(err)
+        if (err) console.log(err)
         if (key) {
-          console.log(`${user} was successfully updated at ${key}`);
+          console.log(`${user} was successfully updated at ${key}`)
           const defaultIdentityPrefix = '!identities!default'
           const data = {
             user,
@@ -199,7 +199,7 @@ class DWebIdentity extends EventEmitter {
             timestamp: new Date().toISOString()
           }
           const d = JSON.stringify(data)
-          if (this.doesDefaultExist() === false) {
+          if (!this.doesDefaultExist()) {
             identityDb.put(defaultIdentityPrefix, d)
           } else {
             identityDb.del(defaultIdentityPrefix)
