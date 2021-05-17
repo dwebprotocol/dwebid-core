@@ -12,7 +12,7 @@ const ID_DIR = path.join(HOME_DIR, "identities")
 const DEVICE_DIR = path.join(ID_DIR, "devices")
 
 class DWebIdentity extends EventEmitter {
-  construction (opts = {}) {
+  constructor (opts = {}) {
     super()
     this.dhtOpts = opts.dhtOpts
     this.store = opts.store
@@ -20,11 +20,12 @@ class DWebIdentity extends EventEmitter {
       keyEncoding: 'utf-8',
       valueEncoding: 'json'
     })
-    this.username = opts.username
+    this.user = opts.user
     this.dht = new USwarm(opts.dhtOpts)
     this.keypair = idsign().keypair()
-    this.dk = dcrypto.discoveryKey(this.keypair.publicKey)
+    this.dk = opts.dk || dcrypto.discoveryKey(this.keypair.publicKey)
     this.currentKeypair = opts.currentKeypair || null
+    this.seq = opts.seq || 0
   }
   checkUserAvailability () {
     const { dht, user } = this
@@ -157,20 +158,19 @@ class DWebIdentity extends EventEmitter {
       })
     })
   }
-  updateRegistration (opts) {
-    const { dht, iddb, user } = this
-    const { seq, currentKeypair: keypair, dk } = opts
+  updateRegistration () {
+    const { dht, iddb, currentKeypair: keypair, seq, dk, user } = this
+    const opts = { seq, keypair, dk } 
     return new Promise((resolve, reject) => {
-      if (!opts.seq) return reject(new Error('opts must include a seq.'))
       const { sign } = idsign()
-      const { publicKey , secretKey } = keypair
-      const signature = sign(username, opts)
+      const { publicKey, secretKey } = keypair
+      const signature = sign(user, opts)
       dht.on('listening', () => {
         const uB = Buffer.from(user)
-        dht.muser.put(uB, {  keypair: { publicKey }, dk, signature, seq }, (err, { key, ...info }) => {
+        dht.muser.put(uB, { keypair: { publicKey }, dk, signature, seq }, (err, { key, ...info }) => {
           if (err) return reject(err)
           if (key) {
-            console.log(`${user} was successfully updated at ${key}.`)
+            console.log(`${user} was successfully updated at ${key}`)
             const defaultIdentityPrefix = '!identities!default'
             const data = { user, dk, publicKey, timestamp: new Date().toISOString() }
             const d = JSON.stringify(data)
@@ -183,7 +183,7 @@ class DWebIdentity extends EventEmitter {
               await iddb.put(defaultIdentityPrefix, d)
               resolve(d)
             }
-          }
+          } 
         })
       })
     })
@@ -215,6 +215,22 @@ class DWebIdentity extends EventEmitter {
         } else {
           return reject(new Error('DEVICE_EXISTS'))
         }
+      })
+    })
+  }
+
+  getSeq () {
+    const { dht, user } = this
+    const uB = Buffer.from(user)
+    return new Promise((resolve, reject) => {
+      dht.on('listening', uB => {
+        dht.muser.get(uB, (err, value) => {
+          if (err) return reject(new Error(err))
+          if (value) {
+            const { seq } = value
+            return resolve(seq)
+          }
+        })
       })
     })
   }
