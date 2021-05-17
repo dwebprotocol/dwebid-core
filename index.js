@@ -1,246 +1,221 @@
+import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import assert from 'assert'
-import { EventEmitter } from 'events'
 import idsign from '@dwebid/sign'
 import { USwarm } from '@uswarm/core'
 import MultiDTree from 'multi-dwebtree'
+import dcrypto from '@ddatabase/crypto'
 
 const HOME_DIR = os.homedir()
-const ID_DIR = path.join(HOME_DIR, "identities") // home/identities/ on Mac
-const DEVICE_DIR = path.join(ID_DIR, "devices") // home/identities/devices on Mac
+const ID_DIR = path.join(HOME_DIR, "identities")
+const DEVICE_DIR = path.join(ID_DIR, "devices")
 
 class DWebIdentity extends EventEmitter {
-  constructor (opts = {}) {
+  construction (opts = {}) {
     super()
-    // TODO: Add assert checks on options
     this.dhtOpts = opts.dhtOpts
-    this.base = opts.base
-    this.identityDb = new MultiDTree(opts.base, {
+    this.store = opts.store
+    this.iddb = new MultiDTree(opts.store, {
       keyEncoding: 'utf-8',
       valueEncoding: 'json'
     })
     this.username = opts.username
     this.dht = new USwarm(opts.dhtOpts)
+    this.keypair = idsign().keypair()
+    this.dk = dcrypto.discoveryKey(this.keypair.publicKey)
+    this.currentKeypair = opts.currentKeypair || null
   }
   checkUserAvailability () {
     const { dht, user } = this
     const uB = Buffer.from(user)
-    dht.on('listening', (uB) => {
-      dht.muser.get(uB, (err, value) => {
+    dht.on('listening', uB => {
+      dht.muser-get(uB, (err, value) => {
         if (err) return true
-        if (value) return false
+        else return false
       })
     })
   }
-  register () {
-    const { dht, identityDb, user } = this
-    const { keypair } = idsign()
-    const { publicKey, secretKey } = keypair()
-    const keypair = {
-      publicKey,
-      secretKey
-    }
+  async register () {
+    const { dht, iddb, keypair, dk, user } = this
+    const { publicKey, secretKey } = keypair
     const uB = Buffer.from(user)
-    // TODO: Get key from Multi DTree's "Diff" feed
-    const dk = null
-    if (this.checkUserAvailability() === true) {
-      dht.on('listening', (uB) => {
-        dht.muser.put(uB, {
-          dk,
-          keypair
-        }, (err, { key, ...info }) => {
-         if (err) return console.log(err)
-         if (key) {
-           console.log(`${user} was successfully registered at ${key}`)
-           const defaultIdentityPrefix = '!identities!default'
-           const data = {
-             user, 
-             dk,
-             publicKey,
-             timestamp: new Date().toISOString()
-           }
-           const d = JSON.stringify(data)
-           await identityDb.put(defaultIdentityPrefix, d)
-           const eventData = {
-             data: d,
-             secretKey
-           }
-           const ed = JSON.stringify(eventData)
-           this.emit('registered', ed)
-         }
-       })
+    if (this.checkUserAvailability()) {
+      dht.on('listening', uB => {
+        return new Promise((resolve, reject) => {
+          dht.muser.put(uB, { dk, keypair }, (err, { key, ...info }) => {
+            if (err) return reject(err)
+            if (key) {
+              console.log(`${user} was successfully registered at ${key}`)
+              const defaultIdentityPrefix = '!identities!default'
+              const data = {
+                user,
+                dk, 
+                publicKey,
+                timestamp: new Date().toISOString()
+              }
+              const d = JSON.stringify(data)
+              await iddb.put(defaultIdentityPrefix, d)
+              const resolveData = { data: d, secretKey }
+              this.emit('registered', resolveData)
+              resolve(resolveData)
+            }
+          })
+        })
       })
-    } 
+    }
   }
-  addUserData (opts) {
-    const { identityDb, user } = this
-    if (!opts.avatar) opts.avatar = null
-    if (!opts.bio) opts.bio = null
-    if (!opts.location) opts.location = null
-    if (!opts.url) opts.url = null
-    if (!opts.displayName) opts.displayName = null
-    const { avatar, bio, location, url, displayName } = opts
-    if (this.doesDefaultExist() === true && this.checkUserAvailability() === false) {
-      const data = {
-        username,
-        avatar,
-        bio,
-        location,
-        url,
-        displayName
-      }
-      const d = JSON.stringify(data)
-      const userDataKey = '!user'
-      const { key } = await identityDb.get(userDataKey)
-      if (key === null) {
-        identityDb.put(userDataKey, d)
-        this.emit('userdata-added', d)
+
+  async addUserData (opts) {
+    return new Promise((resolve, reject) => {
+      const { iddb, user } = this
+      if (!opts.avatar) return reject(new Error('opts must include an avatar'))
+      if (!opts.bio) return reject(new Error('opts must include a bio'))
+      if (!opts.location) return reject(new Error('opts must include a location'))
+      if (!opts.url) return reject(new Error('opts must include a url'))
+      if (!opts.displayName) return reject(new Error('opts must include a displayName'))
+      const { avatar, bio, location, url, displayName } = opts
+      if (this.doesDefaultExist() && !this.checkUserAvailability()) {
+        const data = { user, avatar, bio, location, url, displayName }
+        const d = JSON.stringify(data)
+        const userDataKey = '!user'
+        const { key } = await iddb.get(userDataKey)
+        if (key === null) {
+          this.emit('userdata-added', d)
+          iddb.put(userDataKey, d)
+          resolve(d)
+        } else {
+          await iddb.del(userDataKey)
+          await iddb.put(userDataKey, d)
+          this.emit('userdata-updated', d)
+          resolve(d)
+        }
       } else {
-        await identityDb.del(userDataKey)
-        await identityDb.put(userDataKey, d)
-        this.emit('userdata-updated', d)
+        return reject(new Error('A default user does not exist or the user has not been registered'))
       }
-    } else {
-      throw new Error('A default user does not exist or the user has not been registered.')
-    }
+    })
   }
+
   doesDefaultExist () {
-    const { identityDb } = this
+    const { iddb } = this
     const defaultKey = '!identities!default'
-    const { seq, key, value } = await identityDb.get(defaultKey)
-    if (key === null) {
-      return false
-    } else {
-      return true
-    }
+    const { seq, key, value } = await iddb.get(defaultKey)
+    if (key === null) return false
+    else return true
   }
+
   addRemoteUser (opts) {
-    const { identityDb, user } = this
-    if (!opts.username) throw new Error('opts must include username of remote user.')
-    if (!opts.didKey) throw new Error('opts must include the didKey of the remote user.')
-    const { username, didKey } = opts
-    assert(typeof username === 'string', 'username must be a string')
-    assert(typeof didKey === 'string', 'didKey must be a string.')
-    const putUserKey = `!users!${username}`
-    const data = {
-      username,
-      didKey
-    }
-    const d = JSON.stringify(data)
-    const { key } = await identityDb.get(putUserKey)
-    if (key === null) {
-      await identityDb.put(putUserKey, d)
-      this.emit('added-remote-user', d)
-    } else {
-      await identityDb.del(putUserKey)
-      this.emit('remote-user-deleted', d)
-      await identityDb.put(putUserKey, d)
-      this.emit('remote-user-updated', d)
-    }
+    const { iddb, user } = this
+    return new Promise((resolve, reject) => {
+      if (!opts.username) return reject(new Error('opts must include username of remote user.'))
+      if (!opts.didKey) return reject(new Error('opts must include the didKey of remote user.'))
+      const { username, didKey } = opts
+      if (typeof username === 'string') return reject(new Error('username must be a string'))
+      if (typeof didKey === 'string') return reject(new Error('didKey must be a string'))
+      const putUserKey = `!user!${username}`
+      const data = { username, didKey } 
+      const d = JSON.stringify(data)
+      const { key } = await iddb.get(putUserKey)
+      if (key === null) {
+        await iddb.put(putUserKey, d)
+        this.emit('added-remote-user', d)
+        resolve(d)
+      }  else {
+        this.emit('remote-user-existed', d)
+        return reject(new Error('REMOTE_ALRDY_EXISTS'))
+      }
+    })
   }
   getRemoteUsers () {
-    const { identityDb } = this
-    return db.createReadStream({
+    const { iddb } = this
+    return iddb.createReadStream({
       gte: '!users!'
     })
   }
   getRemoteUser (user) {
-    const { identityDb } = this
-    const { value } = await identityDb.get(`!users!${username}`)
+    const { iddb } = this
+    const { value } = await iddb.get(`!users!${username}`)
     return value
   }
   getDefaultUser () {
-    const { identityDb } = this
-    const { value } = await identityDb.get('!identities!default')
+    const { iddb } = this
+    const { value } = await iddb.get('!identities!default')
     return value
-  }
-  getRemoteUserKey (username) {
+  } 
+  getRemoteUser (username) {
     const { dht } = this
     const uB = Buffer.from(username)
-    dht.on('listening', (uB) => {
-      dht.muser.get(uB, (err, value) => {
-        if (err) throw new Error(err)
-        if (value) {
-          const { dk } = value
-          return dk
-        }
+    return new Promise((resolve, reject) => {
+      dht.on('listening', uB => {
+        dht.muser.get(uB, (err, value) => {
+          if (err) return rject(new Error(err))
+          if (value) {
+            const { dk } = value
+            return resolve(dk)
+          }
+        })
       })
     })
   }
   updateRegistration (opts) {
-    const { dht, identityDb, user } = this
-    if (!opts.seq) throw new Error('Opts must include a seq')
-    if (!opts.keypair.privateKey) throw new Error('Opts must include a private key')
-    if (!opts.keypair.publicKey) throw new Error('Opts must include a public key')
-    if (!opts.dk) throw new Error('Opts must include the identity document key')
-    const { dk, seq, keypair } = opts
-    const { sign } = idsign()
-    const { publicKey, secretKey } = keypair
-    const signature = sign(user, opts)
-    const uB = Buffer.from(user)
-    dht.on('listening', () => {
-      dht.muser.put(uB, {
-        keypair: {
-          publicKey
-        },
-        dk,
-        signature,
-        seq
-      }, (err, { key, ...info }) => {
-        if (err) console.log(err)
-        if (key) {
-          console.log(`${user} was successfully updated at ${key}`)
-          const defaultIdentityPrefix = '!identities!default'
-          const data = {
-            user,
-            dk,
-            publicKey,
-            timestamp: new Date().toISOString()
+    const { dht, iddb, user } = this
+    const { seq, currentKeypair: keypair, dk } = opts
+    return new Promise((resolve, reject) => {
+      if (!opts.seq) return reject(new Error('opts must include a seq.'))
+      const { sign } = idsign()
+      const { publicKey , secretKey } = keypair
+      const signature = sign(username, opts)
+      dht.on('listening', () => {
+        const uB = Buffer.from(user)
+        dht.muser.put(uB, {  keypair: { publicKey }, dk, signature, seq }, (err, { key, ...info }) => {
+          if (err) return reject(err)
+          if (key) {
+            console.log(`${user} was successfully updated at ${key}.`)
+            const defaultIdentityPrefix = '!identities!default'
+            const data = { user, dk, publicKey, timestamp: new Date().toISOString() }
+            const d = JSON.stringify(data)
+            const { key: defaultKey } = await iddb.get(defaultIdentityPrefix)
+            if (defaultKey === null) {
+              await iddb.put(defaultIdentityPrefix, d)
+              resolve(d)
+            } else {
+              await iddb.del(defaultIdentityPrefix)
+              await iddb.put(defaultIdentityPrefix, d)
+              resolve(d)
+            }
           }
-          const d = JSON.stringify(data)
-          if (!this.doesDefaultExist()) {
-            identityDb.put(defaultIdentityPrefix, d)
-          } else {
-            identityDb.del(defaultIdentityPrefix)
-            identityDb.put(defaultIdentityPrefix, d)
-          }
-        }
+        })
       })
     })
   }
   addDevice () {
-    const { identityDb, user } = this
+    const { iddb, user } = this
     const deviceId = crypto.randomBytes(32)
-    // check to see if the device has already been added locally
-    const cwd = DEVICE_DIR
-    fs.stat(cwd, (err, stat) => {
-      if (err) fs.mkdir(cwd)
-    })
-    const deviceFilename = `${deviceId}.device`
-    const deviceFile = path.join(cwd, deviceFilename)
-    fs.stat(deviceFile, (err, stat) => {
-      if (err) {
-        const deviceFileData = {
-          deviceId,
-          user
+    return new Promise((resolve, reject) => {
+      const cwd =  DEVICE_DIR
+      fs.stat(cwd, (err, stat) => {
+        if (err) fs.mkdir(cwd)
+      })
+      const deviceFilename = `${deviceId}.device`
+      const deviceFile = path.join(cwd, deviceFilename)
+      fs.stat(deviceFile, (err, stat) => {
+        if (err) {
+          const deviceFileData = { deviceId, user } 
+          const dfd = JSON.stringify(deviceFileData)
+          fs.writeFile(deviceFile, dfd)
+          const deviceTreeKey = `!devices!${deviceId}`
+          const { key } = await iddb.get(deviceTreeKey)
+          if ( key === null ) {
+            await iddb.put(deviceTreeKey, dfd)
+            resolve({
+              stat: stat,
+              dfd
+            })
+          }
+        } else {
+          return reject(new Error('DEVICE_EXISTS'))
         }
-        const dfd = JSON.stringify(deviceFileData)
-        fs.writeFile(deviceFile, dfd)
-        const deviceTreeKey = `!devices!${deviceId}`
-        const { key } = await identityDb.get(deviceTreeKey)
-        if (key === null) {
-          await identityDb.put(deviceTreeKey, dfd)
-        }
-        return {
-          stat: stat,
-          dfd
-        }
-      } else {
-        throw new Error('Device identity already exists within identity document and on the actual device itself.')
-      }
+      })
     })
   }
 }
-
-module.exports = DWebIdentity
