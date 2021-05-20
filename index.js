@@ -149,13 +149,13 @@ class DWebIdentity extends EventEmitter {
       else return reject()
     })
   }
-  getRemoteUser (username) {
+  getRemoteKey (username) {
     const { dht } = this
     const uB = Buffer.from(username)
     return new Promise((resolve, reject) => {
       dht.on('listening', uB => {
         dht.muser.get(uB, (err, value) => {
-          if (err) return rject(new Error(err))
+          if (err) return reject(new Error(err))
           if (value) {
             const { dk } = value
             return resolve(dk)
