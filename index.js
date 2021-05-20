@@ -133,16 +133,22 @@ class DWebIdentity extends EventEmitter {
       gte: '!users!'
     })
   }
-  getRemoteUser (user) {
+  async getRemoteUser (user) {
     const { iddb } = this
-    const { value } = await iddb.get(`!users!${username}`)
-    return value
+    return new Promise((resolve, reject) => {
+      const { value } = await iddb.get(`!users!${username}`)
+      if (value) return resolve(value)
+      else return reject()
+    })
   }
-  getDefaultUser () {
+  async getDefaultUser() {
     const { iddb } = this
-    const { value } = await iddb.get('!identities!default')
-    return value
-  } 
+    return new Promise((resolve, reject) => {
+      const { value } = await iddb.get('!identities!default')
+      if (value) return resolve(value)
+      else return reject()
+    })
+  }
   getRemoteUser (username) {
     const { dht } = this
     const uB = Buffer.from(username)
@@ -232,6 +238,91 @@ class DWebIdentity extends EventEmitter {
           }
         })
       })
+    })
+  }
+  async addSubIdentity (label, idData) {
+    const { iddb } = this
+    return new Promise((resolve, reject) => {
+      if (!idData.username) return reject(new Error('idData must include a username'))
+      if (!idData.platform) return reject(new Error('idData must include a platform'))
+      if (!idData.address) return reject(new Error('idData must include an account address'))
+      if (!idData.publicKey) return reject(new Error('idData must include a publicKey'))
+      const putKey = `!identities!${label}`
+      const { platform, address, username, publicKey } = idData
+      const timestamp = new Date().toISOString()
+      const data = { label, platform, address, username, publicKey, timestamp }
+      const d = JSON.stringify(data)
+      const { key } = await iddb.get(putKey)
+      if (key === null) {
+        await iddb.put(putKey, d)
+        this.emit('added-sub-identity', d)
+        return resolve(d)
+      }  else {
+        return reject(new Error('SUBID_ALRDY_EXISTS'))
+      }
+    })
+  }
+  
+  async addIdentitySecret (label, secretKey) {
+    const { iddb } = this
+    return new Promise((resolve, reject) => {
+      const idPutKey = `!identities!${label}`
+      const secretPutKey = `!identities!${label}!SECRET`
+      const { key } = await iddb.get(idPutKey)
+      const { key: keyForSecret } = await iddb.get(secretPutKey)
+      if (keyForSecret !== null) {
+        return reject(new Error('Secret key already exists'))
+      }
+      if (key !== null && keyForSecret === null) {
+        await iddb.put(secretPutKey, secretKey)
+        resolve()
+      }
+      if (key === null && keyForSecret === null) {
+        return reject(new Error('You must add the identity before adding the secretKey'))
+      }
+    })
+  }
+  
+  async getSubIdentity (label) {
+    const { iddb } = this
+    return new Promise((resolve, reject) => {
+      const { value } = await iddb.get(`!identities!${label}`)
+      if (value) return resolve(value)
+      else return reject()
+    })
+  }
+  
+  async getSecret (label) {
+    const { iddb } = this
+    return new Promise((resolve, reject) => {
+      const { value } = await iddb.get(`!identities!${label}!SECRET`)
+      if (value) return resolve(value)
+      else return reject()
+    })
+  }
+  
+  async removeIdentity (label) {
+    const { iddb } = this
+    return new Promise((resolve, reject) => {
+      if (label === 'default') 
+      {
+        return reject(new Error('CANNOT_DEL_DEFAULT'))
+      }
+      const delKey = `!identities!${label}`
+      const delKeySecret = `!identities!${label}!SECRET`
+      const { value } = await iddb.get(delKey)
+      const { value: valueSecret } = await iddb.get(delKeySecret)
+      if (value !== null && valueSecret !== null) {
+        await iddb.del(delKey)
+        await iddb.del(delKeySecret)
+      }
+      if (value !== null && valueSecret === null) {
+        await iddb.del(delKey)
+        return resolve()
+      }
+      if (value === null && valueSecret === null) {
+        return reject()
+      }
     })
   }
 }
