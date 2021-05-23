@@ -1,37 +1,66 @@
+import os from 'os'
 import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import assert from 'assert'
-import idsign from '@dwebid/sign'
+import { NanoresourcePromise, Nanoresource } from 'nanoresource-promise/emitter'
 import { USwarm } from '@uswarm/core'
-import MultiDTree from 'multi-dwebtree'
-import dcrypto from '@ddatabase/crypto'
+import DappDb from 'dappdb'
 
-const HOME_DIR = os.homedir()
-const ID_DIR = path.join(HOME_DIR, "identities")
-const DEVICE_DIR = path.join(ID_DIR, "devices")
-
-class DWebIdentity extends EventEmitter {
+export default class DWebIdentity extends Nanoresource {
   constructor (opts = {}) {
     super()
     this.dhtOpts = opts.dhtOpts
-    this.store = opts.store
-    this.iddb = new MultiDTree(opts.store, {
-      keyEncoding: 'utf-8',
+    this.seq = opts.seq || 0
+    this.homeDir = opts.homeDir || os.homedir()
+    this.idDir = path.join(this.homeDir, opts.idDir || 'identities')
+    this.user = opts.user
+    this.userIdDir = path(this.idDir, this.user)
+    this.iddb = null
+
+    // if there is a key, that means we're not the master
+    this.key = opts.key || null
+    this.dk = crypto.createHash('sha256'.update(`dmessenger-${this.user}`).digest())
+    this.secretKey = null
+    this.currentKeypair = opts.currentKeypair || null
+    this.keypair = null
+
+    this.deviceDir = path.join(this.userIdDir, opts.deviceDir || 'devices')
+    this.isReady = false
+    this.isMaster = false
+    this.localSlaveKey = null
+  }
+  async _open () {
+    const key = (this.key !== null) ? this.key : null
+    this.iddb = new DappDb(this.userIdDir, key, {
       valueEncoding: 'json'
     })
-    this.user = opts.user
-    this.dht = new USwarm(opts.dhtOpts)
-    this.keypair = idsign().keypair()
-    this.dk = opts.dk || dcrypto.discoveryKey(this.keypair.publicKey)
-    this.currentKeypair = opts.currentKeypair || null
-    this.seq = opts.seq || 0
+    await new Promise((resolve, reject) => {
+      this.iddb.ready(err => {
+        if (err) return reject(err)
+        if (this.key === null) {
+          this.isMaster = true
+          this.key = this.iddb.local.key
+          this.secretKey = this.iddb.local.secretKey
+          this.keypair = { publicKey: this.key, secretKey: this.secretKey }
+          this.isReady = true
+          return resolve(null)
+        }  else {
+          this.isMaster = false
+          this.secretKey = null
+          this.keypair = null
+          this.localSlaveKey = this.iddb.local.key
+          this.isReady = true
+          return resolve(null)
+        }
+      })
+    })
   }
   checkUserAvailability () {
     const { dht, user } = this
     const uB = Buffer.from(user)
     dht.on('listening', uB => {
-      dht.muser-get(uB, (err, value) => {
+      dht.muser.get(uB, (err, value) => {
         if (err) return true
         else return false
       })
@@ -41,9 +70,10 @@ class DWebIdentity extends EventEmitter {
     const { dht, iddb, keypair, dk, user } = this
     const { publicKey, secretKey } = keypair
     const uB = Buffer.from(user)
-    if (this.checkUserAvailability()) {
+    if (this.checkUserAvailability() && !this.doesDefaultExist()) {
       dht.on('listening', uB => {
         return new Promise((resolve, reject) => {
+          if (!this._isAuthorized()) return reject(new Error('Not authorized.'))
           dht.muser.put(uB, { dk, keypair }, (err, { key, ...info }) => {
             if (err) return reject(err)
             if (key) {
@@ -51,105 +81,123 @@ class DWebIdentity extends EventEmitter {
               const defaultIdentityPrefix = '!identities!default'
               const data = {
                 user,
-                dk, 
+                dk,
                 publicKey,
                 timestamp: new Date().toISOString()
               }
               const d = JSON.stringify(data)
-              await iddb.put(defaultIdentityPrefix, d)
+              iddb.put(defaultIdentityPrefix, d, err => {
+                if (err) return reject(err)
+              })
               const resolveData = { data: d, secretKey }
-              this.emit('registered', resolveData)
-              resolve(resolveData)
+              return resolve(resolveData)
             }
           })
         })
       })
     }
   }
-
+  _isAuthorized () {
+    const { iddb, isMaster, isReady, localSlaveKey } = this
+    if (!isMaster && localSlaveKey !== null && isReady) {
+      iddb.authorized(localSlaveKey, (err, auth) => {
+        if (err) return false
+        else if (auth === true) return true
+        else return false
+      })
+    }  else if (!isReady) {
+      return new Error('ID database is not ready')
+    }  else if (isMaster) {
+      return true
+    }  else if (!isMaster && !localSlaveKey) {
+      return false
+    }
+  }
   async addUserData (opts) {
     return new Promise((resolve, reject) => {
       const { iddb, user } = this
-      if (!opts.avatar) return reject(new Error('opts must include an avatar'))
-      if (!opts.bio) return reject(new Error('opts must include a bio'))
-      if (!opts.location) return reject(new Error('opts must include a location'))
-      if (!opts.url) return reject(new Error('opts must include a url'))
-      if (!opts.displayName) return reject(new Error('opts must include a displayName'))
+      if (!this._isAuthorized()) return reject(new Error('Not authorized.'))
+      if (!opts.avatar) return reject(new Error('must include an avatar'))
+      if (!opts.bio) return reject(new Error('must include a bio'))
+      if (!opts.location) return reject(new Error('must include a location'))
+      if (!opts.url) return reject(new Error('must include a url'))
+      if (!opts.displayName) return reject(new Error('must include a displayName'))
       const { avatar, bio, location, url, displayName } = opts
       if (this.doesDefaultExist() && !this.checkUserAvailability()) {
         const data = { user, avatar, bio, location, url, displayName }
         const d = JSON.stringify(data)
         const userDataKey = '!user'
-        const { key } = await iddb.get(userDataKey)
-        if (key === null) {
-          this.emit('userdata-added', d)
-          iddb.put(userDataKey, d)
-          resolve(d)
-        } else {
-          await iddb.del(userDataKey)
-          await iddb.put(userDataKey, d)
-          this.emit('userdata-updated', d)
-          resolve(d)
-        }
+        iddb.put(userDataKey, d, err => {
+          if (err) return reject(new Error(err))
+          else return resolve()
+        })
       } else {
-        return reject(new Error('A default user does not exist or the user has not been registered'))
+        return reject(new Error('A default user does not exist or the user has not been registered.'))
       }
     })
   }
-
   doesDefaultExist () {
     const { iddb } = this
     const defaultKey = '!identities!default'
-    const { seq, key, value } = await iddb.get(defaultKey)
-    if (key === null) return false
-    else return true
-  }
-
-  addRemoteUser (opts) {
-    const { iddb, user } = this
-    return new Promise((resolve, reject) => {
-      if (!opts.username) return reject(new Error('opts must include username of remote user.'))
-      if (!opts.didKey) return reject(new Error('opts must include the didKey of remote user.'))
-      const { username, didKey } = opts
-      if (typeof username === 'string') return reject(new Error('username must be a string'))
-      if (typeof didKey === 'string') return reject(new Error('didKey must be a string'))
-      const putUserKey = `!user!${username}`
-      const data = { username, didKey } 
-      const d = JSON.stringify(data)
-      const { key } = await iddb.get(putUserKey)
-      if (key === null) {
-        await iddb.put(putUserKey, d)
-        this.emit('added-remote-user', d)
-        resolve(d)
-      }  else {
-        this.emit('remote-user-existed', d)
-        return reject(new Error('REMOTE_ALRDY_EXISTS'))
-      }
+    db.get(defaultKey, (err, nodes) => {
+      if (err) return false
+      if (nodes[0]) return true
     })
   }
-  getRemoteUsers () {
+  async addRemoteUser (opts) {
+    const { iddb, user } = this
+    return new Promise((resolve, reject) => {
+      if (!this._isAuthorized()) return reject(new Error('Not authorized.'))
+      if (!opts.username) return reject(new Error('must include a username of remote user.'))
+      if (!opts.didKey) return reject(new Error('must include the didKey of the remote user.'))
+      const { username, didKey } = opts
+      if (typeof username === 'string') return reject(new Error('username must be a string.'))
+      if (typeof didKey === 'string') return reject(new Error('didKey must be a string.'))
+     const putUserKey = `!user!${username}`
+     const data = { username, didKey }
+     const d = JSON.stringify(data)
+     iddb.put(putUserKey, d, err => {
+       if (err) return reject(err)
+     })
+     return resolve()
+    })
+  }
+  async getRemoteUsers () {
     const { iddb } = this
-    return iddb.createReadStream({
-      gte: '!users!'
+    return new Promise((resolve, reject) => {
+      iddb.list('!user', list => {
+        if (list) return resolve(list)
+        else return reject()
+      })
     })
   }
   async getRemoteUser (user) {
     const { iddb } = this
     return new Promise((resolve, reject) => {
-      const { value } = await iddb.get(`!users!${username}`)
-      if (value) return resolve(value)
-      else return reject()
+      iddb.get(`!user!${user}`, (err, nodes) => {
+        if (err) return reject(err)
+        if (nodes) {
+          let len = nodes.length
+          let nodePos = len - 1
+          return resolve(nodes[nodePos].value)
+        }
+      })
     })
   }
-  async getDefaultUser() {
+  async getDefaultUser () {
     const { iddb } = this
-    return new Promise((resolve, reject) => {
-      const { value } = await iddb.get('!identities!default')
-      if (value) return resolve(value)
-      else return reject()
+    return new Promise ((resolve, reject) => {
+      iddb.get('!user', (err, nodes) => {
+        if (err) return reject(err)
+        if (nodes) {
+          let len = nodes.length
+          let nodePos = len - 1
+          return resolve(nodes[nodePos].value)
+        }
+      })
     })
   }
-  getRemoteKey (username) {
+  async getRemoteKey (username, keyType) {
     const { dht } = this
     const uB = Buffer.from(username)
     return new Promise((resolve, reject) => {
@@ -157,75 +205,19 @@ class DWebIdentity extends EventEmitter {
         dht.muser.get(uB, (err, value) => {
           if (err) return reject(new Error(err))
           if (value) {
-            const { dk } = value
-            return resolve(dk)
-          }
-        })
-      })
-    })
-  }
-  updateRegistration () {
-    const { dht, iddb, currentKeypair: keypair, seq, dk, user } = this
-    const opts = { seq, keypair, dk } 
-    return new Promise((resolve, reject) => {
-      const { sign } = idsign()
-      const { publicKey, secretKey } = keypair
-      const signature = sign(user, opts)
-      dht.on('listening', () => {
-        const uB = Buffer.from(user)
-        dht.muser.put(uB, { keypair: { publicKey }, dk, signature, seq }, (err, { key, ...info }) => {
-          if (err) return reject(err)
-          if (key) {
-            console.log(`${user} was successfully updated at ${key}`)
-            const defaultIdentityPrefix = '!identities!default'
-            const data = { user, dk, publicKey, timestamp: new Date().toISOString() }
-            const d = JSON.stringify(data)
-            const { key: defaultKey } = await iddb.get(defaultIdentityPrefix)
-            if (defaultKey === null) {
-              await iddb.put(defaultIdentityPrefix, d)
-              resolve(d)
-            } else {
-              await iddb.del(defaultIdentityPrefix)
-              await iddb.put(defaultIdentityPrefix, d)
-              resolve(d)
+            if (type === 'dk') {
+              const { dk } = value
+              return resolve(dk)
+            }  else {
+              const { publicKey } = value
+              return resolve(publicKey)
             }
-          } 
+          }
         })
       })
     })
   }
-  addDevice () {
-    const { iddb, user } = this
-    const deviceId = crypto.randomBytes(32)
-    return new Promise((resolve, reject) => {
-      const cwd =  DEVICE_DIR
-      fs.stat(cwd, (err, stat) => {
-        if (err) fs.mkdir(cwd)
-      })
-      const deviceFilename = `${deviceId}.device`
-      const deviceFile = path.join(cwd, deviceFilename)
-      fs.stat(deviceFile, (err, stat) => {
-        if (err) {
-          const deviceFileData = { deviceId, user } 
-          const dfd = JSON.stringify(deviceFileData)
-          fs.writeFile(deviceFile, dfd)
-          const deviceTreeKey = `!devices!${deviceId}`
-          const { key } = await iddb.get(deviceTreeKey)
-          if ( key === null ) {
-            await iddb.put(deviceTreeKey, dfd)
-            resolve({
-              stat: stat,
-              dfd
-            })
-          }
-        } else {
-          return reject(new Error('DEVICE_EXISTS'))
-        }
-      })
-    })
-  }
-
-  getSeq () {
+  async getSeq () {
     const { dht, user } = this
     const uB = Buffer.from(user)
     return new Promise((resolve, reject) => {
@@ -240,89 +232,141 @@ class DWebIdentity extends EventEmitter {
       })
     })
   }
+  async updateRegistration () {
+    const { dht, iddb, currentKeypair: keypair, seq, dk, user } = this
+    const opts = { seq, keypair, dk }
+    return new Promise((resolve, reject) => {
+      if (!this._isAuthorized()) return reject(new Error('Not authorized.'))
+      dht.on('listening', () => {
+        const uB = Buffer.from(user)
+        dht.muser.put(uB, { keypair, dk, seq }, (err, { key, ...info }) => {
+          if (err) return reject(err)
+          if (key) {
+            console.log(`${user} was successfully updated at ${key}`)
+            const defaultIdentityPrefix = '!identities!default'
+            const data = { user, dk, publicKey, timestamp: new Date().toISOString() }
+            const d = JSON.stringify(data)
+            iddb.put(defaultIdentityPrefix, d, err => {
+              if (err) return reject(err)
+            })
+            return resolve()
+          }
+        })
+      })
+    })
+  }
+  async addDevice (deviceLabel) {
+    const { iddb, user } = this
+    const deviceId = crypto.randomBytes(32)
+    return new Promise((resolve, reject) => {
+      if (!this._isAuthorized()) return reject(new Error('Not authorized.'))
+      const cwd = DEVICE_DIR
+      fs.stat(cwd, (err, stat) => {
+        if (err) fs.mkdir(cwd)
+      })
+      const deviceFilename = `${deviceId}.device`
+      const deviceFile = path.join(cwd, deviceFilename)
+      fs.stat(deviceFile, (err, stat) => {
+        if (err) {
+          const deviceFileData = { deviceId, user, deviceLabel }
+          const dfd = JSON.stringify(deviceFileData)
+          fs.writeFile(deviceFile, dfd)
+          const deviceTreeKey = `!devices!${deviceLabel}`
+          iddb.put(deviceTreeKey, dfd, err => {
+            if (err) return reject(err)
+          })
+          return resolve({
+            stat: stat,
+            dfd
+          })
+        } else {
+          return reject(new Error('DEVICE_EXISTS'))
+        }
+      })
+    })
+  }
+  async getDevices () {
+    const { iddb } = this
+    return new Promise((resolve, reject) => {
+      iddb.list('!devices!', list => {
+        if (list) return resolve(list)
+        else return reject()
+      })
+    })
+  }
   async addSubIdentity (label, idData) {
     const { iddb } = this
     return new Promise((resolve, reject) => {
+      if (!this._isAuthorized()) return reject(new Error('Not authorized.'))
       if (!idData.username) return reject(new Error('idData must include a username'))
       if (!idData.platform) return reject(new Error('idData must include a platform'))
-      if (!idData.address) return reject(new Error('idData must include an account address'))
+      if (!idData.address) return reject(new Error('idData must include an address'))
       if (!idData.publicKey) return reject(new Error('idData must include a publicKey'))
       const putKey = `!identities!${label}`
       const { platform, address, username, publicKey } = idData
       const timestamp = new Date().toISOString()
       const data = { label, platform, address, username, publicKey, timestamp }
       const d = JSON.stringify(data)
-      const { key } = await iddb.get(putKey)
-      if (key === null) {
-        await iddb.put(putKey, d)
-        this.emit('added-sub-identity', d)
-        return resolve(d)
-      }  else {
-        return reject(new Error('SUBID_ALRDY_EXISTS'))
-      }
+      iddb.put(putKey, d, err => {
+        if (err) return reject(new Error(err))
+        else return resolve()
+      })
     })
   }
-  
   async addIdentitySecret (label, secretKey) {
     const { iddb } = this
     return new Promise((resolve, reject) => {
-      const idPutKey = `!identities!${label}`
+      if (!this._isAuthorized()) return reject(new Error('Not authorized.'))
       const secretPutKey = `!identities!${label}!SECRET`
-      const { key } = await iddb.get(idPutKey)
-      const { key: keyForSecret } = await iddb.get(secretPutKey)
-      if (keyForSecret !== null) {
-        return reject(new Error('Secret key already exists'))
-      }
-      if (key !== null && keyForSecret === null) {
-        await iddb.put(secretPutKey, secretKey)
-        resolve()
-      }
-      if (key === null && keyForSecret === null) {
-        return reject(new Error('You must add the identity before adding the secretKey'))
-      }
+      iddb.put(secretPutKey, secretKey, err => {
+        if (err) return reject(new Error(err))
+        else return resolve()
+      })
     })
   }
-  
-  async getSubIdentity (label) {
-    const { iddb } = this
-    return new Promise((resolve, reject) => {
-      const { value } = await iddb.get(`!identities!${label}`)
-      if (value) return resolve(value)
-      else return reject()
-    })
-  }
-  
   async getSecret (label) {
     const { iddb } = this
     return new Promise((resolve, reject) => {
-      const { value } = await iddb.get(`!identities!${label}!SECRET`)
-      if (value) return resolve(value)
-      else return reject()
+      iddb.get(`!identities!${label}!SECRET`, (err, nodes) => {
+        if (err) return reject(new Error(err))
+        if (nodes) {
+          let len = nodes.length
+          let nodePos = len - 1
+          return resolve(nodes[nodePos].value)
+        }
+      })
     })
   }
-  
+  async getSubIdentity (label) {
+    const { iddb } = this
+    return new Promise((resolve, reject) => {
+      iddb.get(`!identities!${label}`, (err, nodes) => {
+        if (err) return reject(new Error(err))
+        if (nodes) {
+          let len = nodes.length
+          let nodePos = len - 1
+          return resolve(nodes[nodePos].value)
+        }
+      })
+    })
+  }
   async removeIdentity (label) {
     const { iddb } = this
     return new Promise((resolve, reject) => {
-      if (label === 'default') 
-      {
-        return reject(new Error('CANNOT_DEL_DEFAULT'))
-      }
+      if (!this._isAuthorized()) return reject(new Error('Not authorized.'))
+      if (label === 'default') return reject(new Error('CANNOT_DEL_DEFAULT'))
       const delKey = `!identities!${label}`
       const delKeySecret = `!identities!${label}!SECRET`
-      const { value } = await iddb.get(delKey)
-      const { value: valueSecret } = await iddb.get(delKeySecret)
-      if (value !== null && valueSecret !== null) {
-        await iddb.del(delKey)
-        await iddb.del(delKeySecret)
-      }
-      if (value !== null && valueSecret === null) {
-        await iddb.del(delKey)
-        return resolve()
-      }
-      if (value === null && valueSecret === null) {
-        return reject()
-      }
+      iddb.del(delKey)
+      iddb.del(delKeySecret)
+      return resolve()
     })
+  }
+  async getDb () {
+    const { iddb } = this
+    return new Promise((resolve) => {
+      if (iddb) return resolve(iddb)
+      else return reject()
+    }) 
   }
 }
