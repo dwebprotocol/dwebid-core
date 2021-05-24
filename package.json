@@ -1,6 +1,6 @@
 {
   "name": "@dwebid/core",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "The core module related to the dWebID stack, used for creating dWeb identities and managing dWeb-based identity documents.",
   "main": "index.js",
   "scripts": {

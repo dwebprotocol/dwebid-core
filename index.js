@@ -10,31 +10,32 @@ import DappDb from 'dappdb'
 export default class DWebIdentity extends Nanoresource {
   constructor (opts = {}) {
     super()
-    this.dhtOpts = opts.dhtOpts
+    this.dhtOpts = opts.dhtOpts || null
     this.seq = opts.seq || 0
-    this.homeDir = opts.homeDir || os.homedir()
+    this.homeDir = opts.homeDir || os.homeDir()
     this.idDir = path.join(this.homeDir, opts.idDir || 'identities')
     this.user = opts.user
     this.userIdDir = path(this.idDir, this.user)
     this.iddb = null
-
-    // if there is a key, that means we're not the master
+    this.dht = null
     this.key = opts.key || null
-    this.dk = crypto.createHash('sha256'.update(`dmessenger-${this.user}`).digest())
+    this.dk = crypto.createHash('sha256').update(`${this.user}`).digest()
     this.secretKey = null
     this.currentKeypair = opts.currentKeypair || null
     this.keypair = null
-
     this.deviceDir = path.join(this.userIdDir, opts.deviceDir || 'devices')
     this.isReady = false
     this.isMaster = false
     this.localSlaveKey = null
   }
+
   async _open () {
     const key = (this.key !== null) ? this.key : null
+    const dhtOpts = (this.dhtOpts === null) ? { ephemeral: false } : this.dhtOpts
     this.iddb = new DappDb(this.userIdDir, key, {
       valueEncoding: 'json'
     })
+    this.dht = new USwarm(dhtOpts)
     await new Promise((resolve, reject) => {
       this.iddb.ready(err => {
         if (err) return reject(err)
@@ -44,15 +45,16 @@ export default class DWebIdentity extends Nanoresource {
           this.secretKey = this.iddb.local.secretKey
           this.keypair = { publicKey: this.key, secretKey: this.secretKey }
           this.isReady = true
-          return resolve(null)
         }  else {
           this.isMaster = false
           this.secretKey = null
           this.keypair = null
           this.localSlaveKey = this.iddb.local.key
           this.isReady = true
-          return resolve(null)
         }
+        this.dht.on('listening', () => {
+          return resolve(null)
+        })
       })
     })
   }
