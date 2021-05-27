@@ -146,33 +146,35 @@ export default class DWebIdentity extends Nanoresource {
       })
     })
   }
-  addDevice (label) {
-    const { iddb, user, isReady } = this
+  async addDevice (label) {
+    const { iddb, user, isMaster, isReady } = this
     if (!isReady) await this.open()
+  
     const deviceId = crypto.randomBytes(32)
     return new Promise((resolve, reject) => {
-      if (!this._isAuthorized()) return reject(new Error('You are not authorized to write to this ID document.'))
+      if (!this._isAuthorized()) return reject(new Error('You are not authorized to write to this ID document'))
       const cwd = DEVICE_DIR
       fs.stat(cwd, (err, stat) => {
         if (err) fs.mkdir(cwd)
       })
+      if (isMaster) label = 'master'
       const deviceFilename = `${deviceId}.device`
       const deviceFile = path.join(cwd, deviceFilename)
       fs.stat(deviceFile, (err, stat) => {
-        if (err) {
+        if (err) {       
           const deviceFileData = { deviceId, label, user }
           const dfd = JSON.stringify(deviceFileData)
           fs.writeFile(deviceFile, dfd)
-          const deviceTreeKey = `!devices!${deviceId}`
+          if (isMaster) const deviceTreeKey = '!devices!master'
+          else const deviceTreeKey = `!devices!${deviceId}`
           iddb.put(deviceTreeKey, dfd, err => {
             if (err) return reject(err)
           })
           return resolve({
-            stat: stat,
             dfd
-          }) 
+          })
         } else {
-          return reject(new Error('DEVICE_EXISTS'))
+          return reject(new Error('DEVICE EXISTS'))
         }
       })
     })
@@ -381,6 +383,20 @@ export default class DWebIdentity extends Nanoresource {
             return resolve()
           }
         })
+      })
+    })
+  }
+  async getMasterDevice () {
+    const { iddb, isReady } = this
+    if (!isReady) await this.open()
+    return new Promise((resolve, reject) => {
+      iddb.get('!devices!master', (err, nodes) => {
+        if (err) return reject(err)
+        if (nodes) {
+          let len = nodes.length
+          let nP = len - 1
+          return resolve(nodes[nP].value)
+        }
       })
     })
   }
