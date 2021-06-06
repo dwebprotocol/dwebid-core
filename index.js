@@ -90,7 +90,7 @@ export default class DWebIdentity extends Nanoresource {
         dht.muser.put(uB, { dk, keypair }, (err, { key, ...info }) => {
           if (err) return reject(err)
           if (key) {
-            const defaultIdentityPrefix = '!identities!default'
+            const defaultIdentityPrefix = '/identities/default'
             const data = { user, dk, publicKey, timestamp: new Date().toISOString() }
             const d = JSON.stringify(data)
             iddb.put(defaultIdentityPrefix, d, err => {
@@ -120,7 +120,7 @@ export default class DWebIdentity extends Nanoresource {
     const { iddb, isReady } = this
     if (!isReady) await this.open()
     return new Promise((resolve, reject) => {
-      iddb.get('!identities!default', (err, nodes) => {
+      iddb.get('/identities/default', (err, nodes) => {
         if (err) return reject(err)
         if (nodes) {
           let len = nodes.length
@@ -166,7 +166,7 @@ export default class DWebIdentity extends Nanoresource {
           const dfd = JSON.stringify(deviceFileData)
           fs.writeFile(deviceFile, dfd)
           if (isMaster) const deviceTreeKey = '!devices!master'
-          else const deviceTreeKey = `!devices!${deviceId}`
+          else const deviceTreeKey = `/devices/${deviceId}`
           iddb.put(deviceTreeKey, dfd, err => {
             if (err) return reject(err)
           })
@@ -179,13 +179,13 @@ export default class DWebIdentity extends Nanoresource {
       })
     })
   }
-  async getDevices () {
+  getDevices() {
     const { iddb, isReady } = this
-    if (!isReady) await this.open()
+    if (!isReady) this.open()
     return new Promise((resolve, reject) => {
-      iddb.list('!devices!', list => {
-         if (list) return resolve(list)
-         else return reject()
+      iddb.list('/devices/', (err, list) => {
+        if (err) return reject(err)
+        return resolve(list.map(n => n.value))
       })
     })
   }
@@ -198,7 +198,7 @@ export default class DWebIdentity extends Nanoresource {
       if (!idData.platform) return reject(new Error('idData must include a platform.'))
       if (!idData.address) return reject(new Error('idData must include an address.'))
       if (!idData.publicKey) return reject(new Error('idData must include a publicKey.'))
-      const putKey = `!identities!${label}`
+      const putKey = `/identities/${label}`
       const { platform, address, username, publicKey } = idData
       const timestamp = new Date().toISOString()
       const data = { label, platform, address, username, publicKey, timestamp }
@@ -214,8 +214,8 @@ export default class DWebIdentity extends Nanoresource {
     if (!isReady) await this.open()
     return new Promise((resolve, reject) => {
       if (!this._isAuthorized()) return reject(new Error('You are not authorized to write to this ID document.'))
-      const idPutKey = `!identities!${label}`
-      const secretPutKey = `!identities!${label}!SECRET`
+      const idPutKey = `/identities/${label}`
+      const secretPutKey = `/identities/${label}/SECRET`
       iddb.put(idPutKey, secretKey, err => {
         if (err) return reject(new Error(err))
         else return resolve()
@@ -226,7 +226,7 @@ export default class DWebIdentity extends Nanoresource {
     const { iddb, isReady } = this
     if (!isReady) await this.open()
     return new Promise((resolve, reject) => {
-      iddb.get(`!identities!${label}!SECRET`, (err, nodes) => {
+      iddb.get(`/identities/${label}/SECRET`, (err, nodes) => {
         if (err) return reject(new Error(err))
         if (nodes) {
           let len = nodes.length
@@ -240,7 +240,7 @@ export default class DWebIdentity extends Nanoresource {
     const { iddb, isReady } = this
     if (!isReady) await this.open()
     return new Promise((resolve, reject) => {
-      iddb.get(`!identities!${label}`, (err, nodes) => {
+      iddb.get(`/identities/${label}`, (err, nodes) => {
         if (err) return reject(new Error(err))
         if (nodes) {
           let len = nodes.length
@@ -250,28 +250,15 @@ export default class DWebIdentity extends Nanoresource {
       })
     })
   }
-  async getSubIdentity (label) {
-    const { iddb, isReady } = this
-    if (!isReady) await this.open()
-    return new Promise((resolve, reject) => {
-      iddb.get(`!identities!${label}`, (err, nodes) => {
-        if (err) return reject(new Error(err))
-        if (nodes) {
-          let len = nodes.length
-          let nP = len - 1
-          return resolve(nodes[nP].value)
-        }
-      })
-    })
-  }
+
   async removeIdentity (label) {
     const { iddb, isReady } = this
     if (!isReady) await this.open()
     return new Promise((resolve, reject) => {
       if (!this._isAuthorized()) return reject(new Error('You are not authorized to write to this ID document.'))
       if (label === 'default') return reject(new Error('CANNOT_DEL_DEFAULT'))
-      const delKey = `!identities!${label}`
-      const delKeySecret = `!identities!${label}!SECRET`
+      const delKey = `/identities/${label}`
+      const delKeySecret = `/identities/${label}/SECRET`
       iddb.del(delKey)
       iddb.del(delKeySecret)
       return resolve()
@@ -288,19 +275,19 @@ export default class DWebIdentity extends Nanoresource {
   doesDefaultExist () {
     const { iddb, isReady } = this
     if (!isReady) await this.open()
-    const defaultKey = '!identities!default'
+    const defaultKey = '/identities/default'
     iddb.get(defaultKey, (err, nodes) => {
       if (err) return false
       if (nodes[0]) return true
     })
   }
-  async getRemoteUsers () {
+  getRemoteUsers() {
     const { iddb, isReady } = this
-    if (!isReady) await this.open()
+    if (!isReady) this.open()
     return new Promise((resolve, reject) => {
-      iddb.list('!user!', list => {
-        if (list) return resolve(list)
-        else return reject()
+      iddb.list('/users/', (err, list) => {
+        if (err) return reject(err)
+        return resolve(list.map(n => n.value))
       })
     })
   }
@@ -308,7 +295,7 @@ export default class DWebIdentity extends Nanoresource {
     const { iddb, isReady } = this
     if (!isReady) await this.open()
     return new Promise((resolve, reject) => {
-      iddb.get(`!user!${user}`, (err, nodes) => {
+      iddb.get(`/users/${user}`, (err, nodes) => {
         if (err) return reject(err)
         if (nodes) {
           let len = nodes.length
@@ -331,7 +318,7 @@ export default class DWebIdentity extends Nanoresource {
       if (this.doesDefaultExist()) {
         const data = { user, avatar, bio, location, url, displayName }
         const d = JSON.stringify(data)
-        const userDataKey = '!user'
+        const userDataKey = '/user'
         iddb.put(userDataKey, d, (err) => {
           if (err) return reject(new Error(err))
           else return resolve(null)
@@ -353,7 +340,7 @@ export default class DWebIdentity extends Nanoresource {
       if (typeof username !== 'string') return reject(new Error('username must be a string'))
       if (typeof dk !== 'string') return reject(new Error('dk must be a string'))
       if (typeof publicKey !== 'string') return reject(new Error('publicKey must be a string'))
-      const putUserKey = `!user!${username}`
+      const putUserKey = `/users/${username}`
       const data = { username, publicKey, dk }
       const d = JSON.stringify(data)
       iddb.put(putUserKey, d, err => {
@@ -374,7 +361,7 @@ export default class DWebIdentity extends Nanoresource {
         dht.muser.put(uB, { keypair, dk, seq }, (err, { key, ...info }) => {
           if (err) return reject(err)
           if (key) {
-            const defaultIdentityPrefix = '!identities!default'
+            const defaultIdentityPrefix = '/identities/default'
             const data = { user, dk, publicKey, timestamp: new Date().toISOString() }
             const d = JSON.stringify(data)
             iddb.put(defaultIdentityPrefix, d, err => {
@@ -396,6 +383,40 @@ export default class DWebIdentity extends Nanoresource {
           let len = nodes.length
           let nP = len - 1
           return resolve(nodes[nP].value)
+        }
+      })
+    })
+  }
+
+  async addAppData (opts) {
+    const { iddb, user, isReady } = this
+    if (!isReady) this.open()
+    return new Promise((resolve, reject) => {
+      if (!this._isAuthorized()) return reject(new Error('You are not authorized to write to this identity document.'))
+      if (!opts.appName) return reject(new Error('You must include an appName in opts'))
+      if (!opts.dataType) return reject(new Error('You must include a dataType in opts'))
+      if (!opts.data) return reject(new Error('You must include data in opts'))
+      if (!opts.keyName) return reject(new Error('You must include a keyName in opts'))
+  
+      const { appName, dataType, data, keyName } = opts
+      const putKey = `/apps/${appName}/${dataType}/${keyName}`
+      const d = JSON.stringify(data)
+      iddb.put(putKey, d, err => {
+        if (err) return reject()
+        return resolve()
+      })
+    })
+  }
+  
+  async getUserData () {
+    const { iddb, user, isReady } = this
+    if (!isReady) this.open()
+    return new Promise((resolve, reject) => {
+      iddb.get('/user', (err, nodes) => {
+        if (err) return reject(new Error(err))
+        if (nodes) {
+          let len = nodes.length - 1
+          return resolve(nodes[len].value)
         }
       })
     })
