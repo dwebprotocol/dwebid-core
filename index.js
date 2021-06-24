@@ -307,26 +307,26 @@ export default class DWebIdentity extends Nanoresource {
   }
   async addUserData (opts) {
     const { iddb, user, isReady } = this
-    if (!isReady) await this.open()
+    if (!isReady) this.open()
     return new Promise((resolve, reject) => {
-      if (!this._isAuthorized()) return reject(new Error('You are not authorized to write to this ID document.'))
-      if (!opts.avatar) return reject(new Error('opts must include an avatar'))
-      if (!opts.bio) return reject(new Error('opts must include a bio'))
-      if (!opts.location) return reject(new Error('opts must include a location'))
-      if (!opts.url) return reject(new Error('opts must include a url'))
-      if (!opts.displayName) return reject(new Error('opts must include a displayName'))
+      if (!this._isAuthorized()) return reject(new Error('You are not authorized to write to this ID.'))
+      if (!opts.avatar) return reject(new Error('Opts must include an avatar.'))
+      if (!opts.bio) return reject(new Error('Opts must include a bio.'))
+      if (!opts.location) return reject(new Error('Opts must include a location.'))
+      if (!opts.url) return reject(new Error('Opts must include a URL.'))
+      if (!opts.displayName) return reject(new Error('Opts must include a display name.'))
       if (this.doesDefaultExist()) {
-        const data = { user, avatar, bio, location, url, displayName }
+        const { avatar, bio, location, url, displayName, bkgImage } = opts
         const d = JSON.stringify(data)
-        const userDataKey = '/user'
-        iddb.put(userDataKey, d, (err) => {
+        const userDataKey = "/user"
+        iddb.put(userDataKey, d, err => {
           if (err) return reject(new Error(err))
           else return resolve(null)
         })
       }  else {
-        return reject(new Error('Default record must exist before writing user data'))
+        return reject(new Error('Default record does not exist or this ID instance has no DB.'))
       }
-    }) 
+    })
   }
   async addRemoteUser (opts) {
     const { iddb, user, isReady } = this
